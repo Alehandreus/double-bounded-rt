@@ -1,0 +1,33 @@
+[submodule "trainer/mesh-utils"]
+	path = trainer/mesh-utils
+	url = https://github.com/Alehandreus/mesh-utils
+[submodule "renderer/ext/flip-cuda"]
+	path = renderer/ext/flip-cuda
+	url = https://github.com/Kolins-Code/flip_cuda
+[submodule "renderer/ext/tinygltf"]
+	path = renderer/ext/tinygltf
+	url = https://github.com/syoyo/tinygltf.git
+[submodule "renderer/ext/glfw"]
+	path = renderer/ext/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "renderer/ext/imgui"]
+	path = renderer/ext/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "renderer/ext/bvh"]
+	path = renderer/ext/bvh
+	url = https://github.com/madmann91/bvh.git
+[submodule "renderer/ext/tiny-cuda-nn"]
+	path = renderer/ext/tiny-cuda-nn
+	url = https://github.com/julcst/tiny-cuda-nn.git
+[submodule "renderer/ext/assimp"]
+	path = renderer/ext/assimp
+	url = https://github.com/assimp/assimp.git
+[submodule "renderer/ext/tinyexr"]
+	path = renderer/ext/tinyexr
+	url = https://github.com/syoyo/tinyexr.git
+[submodule "renderer/ext/stb"]
+	path = renderer/ext/stb
+	url = https://github.com/nothings/stb.git
+[submodule "renderer/ext/nfd"]
+	path = renderer/ext/nfd
+	url = https://github.com/btzy/nativefiledialog-extended.git

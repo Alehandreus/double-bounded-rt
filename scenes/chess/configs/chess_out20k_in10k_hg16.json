@@ -1,0 +1,72 @@
+{
+  "scene": {
+    "original_mesh": {
+      "path": "../meshes/chess.glb",
+      "scale": 1.0
+    },
+    "inner_shell": {
+      "path": "../meshes/chess_inner_10000.obj",
+      "scale": 1.0
+    },
+    "outer_shell": {
+      "path": "../meshes/chess_outer_20000.obj",
+      "scale": 1.0
+    },
+    "additional_mesh": {
+      "path": "../meshes/chess_extra.glb",
+      "scale": 1.0
+    }
+  },
+  "checkpoint_path": "../checkpoints/chess_out20k_in10k_hg16.bin",
+  "environment": {
+    "hdri_path": "../../hdris/photo_studio_loft_hall_4k.exr",
+    "rotation": 285.0
+  },
+  "camera": {
+    "matrix": [
+      0.28359198570251465,
+      -0.5326340198516846,
+      0.7974169850349426,
+      0.0,
+      0.0,
+      0.8315569758415222,
+      0.5554370284080505,
+      0.0,
+      -0.9589440226554871,
+      -0.15751700103282928,
+      0.23582300543785095,
+      0.0,
+      0.00184299994725734,
+      0.050255998969078064,
+      -0.7192429900169373,
+      1.0
+    ],
+    "yfov": 0.7853981633974483,
+    "move_speed": 0.3
+  },
+  "rendering": {
+    "bounce_count": 3,
+    "total_samples": 2048
+  },
+  "material": {
+    "use_constant_neural_color": false,
+    "constant_neural_color": [1.0, 0.0, 1.0],
+    "specular": 0.2,
+    "metallic": 0.1,
+    "roughness": 0.2
+  },
+  "neural_network": {
+    "base_resolution": 16,
+    "log2_hashmap_size": 16,
+    "use_neural_query": true,
+    "points_between": 1
+  },
+  "training": {
+    "loss_weights": {
+      "cls_loss": 0.1,
+      "normal_loss": 1.0,
+      "color_loss": 10.0,
+      "distance_loss": 0.01
+    }
+  }
+}

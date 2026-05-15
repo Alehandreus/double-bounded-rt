@@ -1,0 +1,136 @@
+from types import SimpleNamespace
+
+
+cfg = SimpleNamespace()
+
+cfg.device = "cuda"
+
+cfg.scale = 100
+cfg.fine_mesh_path = "../scenes/chess/meshes/chess_neural.glb"
+cfg.outer_mesh_path = "../scenes/chess/meshes/chess_outer_20000.obj"
+cfg.inner_mesh_path = "../scenes/chess/meshes/chess_inner_10000.obj"
+
+# cfg.scale = 10
+# cfg.fine_mesh_path = "../scenes/exhibition/meshes/exhibition_neural.glb"
+# cfg.outer_mesh_path = "../scenes/exhibition/meshes/exhibition_outer_20000.obj"
+# cfg.inner_mesh_path = "../scenes/exhibition/meshes/exhibition_inner_10000.obj"
+
+# cfg.scale = 10
+# cfg.fine_mesh_path = "../scenes/andalusian/meshes/andalusian_neural.glb"
+# cfg.outer_mesh_path = "../scenes/andalusian/meshes/andalusian_outer_20000.obj"
+# cfg.inner_mesh_path = "../scenes/andalusian/meshes/andalusian_inner_10000.obj"
+
+# cfg.scale = 0.1
+# cfg.fine_mesh_path = "../scenes/statuette/meshes/statuette_neural.glb"
+# cfg.outer_mesh_path = "../scenes/statuette/meshes/statuette_outer_20000.obj"
+# cfg.inner_mesh_path = "../scenes/statuette/meshes/statuette_inner_10000.obj"
+
+cfg.mesh_n_max_samples = 1_000_000
+
+
+### MODEL ###
+
+cfg.model = SimpleNamespace()
+
+cfg.model.network_config = {
+    "otype": "FullyFusedMLP",
+    "activation": "LeakyReLU",
+    "output_activation": "None",
+    "n_neurons": 128,
+    "n_hidden_layers": 4,
+}
+
+# cfg.model.encoding_type = "3d"
+cfg.model.encoding_type = "3d+1"
+
+# for 3d point encoding
+cfg.model.point_encoding_config = {
+    "otype": "HashGrid",
+    "n_levels": 8,
+    "n_features_per_level": 4,
+    "log2_hashmap_size": 16,
+    "base_resolution": 16,
+    "per_level_scale": 2,
+    "fixed_point_pos": False,
+}
+
+# for direction encoding
+cfg.model.direction_encoding_config = {
+    "otype": "SphericalHarmonics", 
+    "degree": 4  
+}
+
+
+### TRAINING ###
+
+cfg.train = SimpleNamespace()
+
+# each epoch contains <cfg.train.sample_size> rays
+cfg.train.sample_size = 100_000
+cfg.train.epochs = 200_000
+
+cfg.train.learning_rate = 1e-3
+cfg.train.learning_rate_scheduler_min = 1.0
+# cfg.train.learning_rate_scheduler_min = 0.1
+cfg.train.learning_rate_scheduler_total_iters = 10 * 5000
+
+# can be 'EMA' or 'SWA', other strings mean that no averaged model used
+cfg.train.use_averaged_model = 'EMA'
+#cfg.train.use_averaged_model = None
+cfg.train.ema_decay = 0.999
+cfg.train.swa_learing_rate = 1e-3
+
+# if not None, load model and optimizer state from given checkpoint
+cfg.train.model_start_checkpoint = None
+
+# path where checkpoint will be saved during training
+cfg.train.model_save_checkpoint = None
+cfg.train.checkpoints_path = "checkpoints"
+cfg.train.evaluation_interval = 5000
+cfg.train.evaluate = True
+cfg.train.save_pt = True
+cfg.train.save_bin = True
+
+# tensorboard logging
+cfg.train.tensorboard = True
+cfg.train.tensorboard_path = "runs"
+cfg.train.run_name = None
+
+cfg.train.loss_weights = {
+    "cls_loss": 0.1,
+    "normal_loss": 1.0,
+    "color_loss": 10.0,
+    "distance_loss": 0.01,
+}
+
+
+### VISUALIZATION ###
+
+cfg.visualization = SimpleNamespace()
+
+cfg.visualization.image_size = 2048
+
+cfg.visualization.light_normal = [1.0, 1.0, 1.0]
+# directory where all rendered images will be saved
+cfg.visualization.render_path = "rendered"
+cfg.visualization.true_distance_render_name = "true_distance_map.png"
+cfg.visualization.predicted_distance_render_name = "predicted_distance_map.png"
+cfg.visualization.distance_difference_render_name = "distance_difference.png"
+cfg.visualization.predicted_mesh_render_name = "predicted_mesh.png"
+cfg.visualization.true_mesh_render_name = "true_mesh.png"
+
+# directory where all previews will be saved
+cfg.visualization.preview_path = "preview"
+cfg.visualization.fine_mesh_preview_name = "fine_preview.png"
+cfg.visualization.outer_mesh_preview_name = "outer_preview.png"
+cfg.visualization.inner_mesh_preview_name = "inner_preview.png"
+
+cfg.visualization.camera_angle = 0
+
+# use CUDA renderer for visualization instead of simple python lambert renderer
+# rendered images will be stored in trainer/comparison_output insread of trainer/<cfg.visualization.render_path>
+cfg.visualization.use_neural_renderer = False
+cfg.visualization.neural_renderer_path = "../renderer/build/evaluate"
+# base json config for CUDA renderer (paths will be replaced during training)
+cfg.json_config_path = "../scenes/chess/configs/chess_out20k_in10k_hg16.json"
+cfg.visualization.tmp_config_json_path = cfg.json_config_path[:-5] + "_tmp.json"

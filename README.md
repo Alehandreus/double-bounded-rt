@@ -119,4 +119,4 @@ tensorboard --logdir runs
 
 Our pipeline support separate neural and non-neural rendering. You may need 3 different `.glb` files: whole scene, neural part of the scene and non-neural. Check scene config examples and trainer config for more details.
 
-Also you need inner and outer bounding mesh of desired part for neural compression. You can create them with our fork of [bouning-mesh](https://github.com/Alehandreus/bounding-mesh) (it has inward mode fix). We suggest using `-m MinConstant` flag and fixing geometry of mesh (like removing duplicate vertices and recalculating normals in Blender). But sometimes it produces unproper result still, so manual correction may be required.
+Also you need inner and outer bounding meshes of desired part for neural compression. You can create them with our fork of [bouning-mesh](https://github.com/Alehandreus/bounding-mesh) (it has inward mode fix). We suggest using `-m MinConstant` flag and fixing geometry of mesh (like removing duplicate vertices and recalculating normals in Blender). But sometimes it produces unproper result still, so manual correction may be required.

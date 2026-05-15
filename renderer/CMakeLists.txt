@@ -127,7 +127,6 @@ if(USE_OPTIX)
             $ENV{OPTIX_ROOT_DIR}/include
             /usr/local/optix/include
             /opt/optix/include
-            /opt/NVIDIA-OptiX-SDK-9.0.0-linux64-x86_64/include/
         DOC "OptiX SDK include directory"
     )
     if(NOT OPTIX_INCLUDE_DIR)

@@ -17,8 +17,6 @@
 // Configuration.
 namespace {
 
-const int kWidth = 1920;
-const int kHeight = 1080;
 const int kBatchSizeGT = 8;
 const int kBatchSizeNeural = 8;
 
@@ -129,6 +127,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     const int kTotalSamples = config.rendering.total_samples;
+    const int kWidth = config.rendering.width;
+    const int kHeight = config.rendering.height;
     const int kBounceCount = config.rendering.bounce_count;
 
     // Create output directory.
@@ -222,7 +222,13 @@ int main(int argc, char** argv) {
     renderer.setConstantNeuralColor(config.material.use_constant_neural_color, config.material.constant_neural_color);
     renderer.resize(kWidth, kHeight);
     renderer.setBounceCount(kBounceCount);
-    renderer.setLambertView(false);
+    renderer.setLambertView(config.shading.lambert);
+    renderer.setLambertSettings(ToLambertSettings(config.shading));
+    renderer.setCenterRays(config.rendering.center_rays);
+    if (config.shading.lambert) {
+        std::printf("Shading: lambert%s\n",
+                    config.shading.litert_mode ? " (LiteRT-compatible)" : " (headlight)");
+    }
     renderer.setEnvmapRotation(config.environment.rotation);
     renderer.setUseNeuralQuery(config.neural_network.use_neural_query);
 
@@ -242,9 +248,20 @@ int main(int argc, char** argv) {
     size_t pixelCount = static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight);
     std::vector<uchar4> groundTruthPixels(pixelCount);
     std::vector<uchar4> neuralPixels(pixelCount);
+    double neuralTimeMs = 0.0;
+
+    // Resolve where the neural render goes.  Without an explicit output_path we
+    // keep writing comparison_output/neural.png next to the CWD, as before.
+    std::string neuralPath = config.rendering.output_path;
+    if (neuralPath.empty()) {
+        neuralPath = std::string(kOutputFolder) + "/" + kNeuralOutput;
+    } else {
+        std::filesystem::path parent = std::filesystem::path(neuralPath).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+    }
 
     // Render ground truth (classic path tracing).
-    {
+    if (config.rendering.render_ground_truth) {
         std::printf("\n=== Rendering ground truth (%d samples) ===\n", kTotalSamples);
         renderer.setUseNeuralQuery(false);
         renderer.setClassicMeshIndex(0);
@@ -281,6 +298,8 @@ int main(int argc, char** argv) {
         int iter = 0;
         ProgressBar bar;
         bar.begin("Neural", totalIters);
+        cudaDeviceSynchronize();
+        auto neuralStart = std::chrono::steady_clock::now();
         while (remainingSamples > 0) {
             int batchSamples = std::min(remainingSamples, kBatchSizeNeural);
             renderer.setSamplesPerPixel(batchSamples);
@@ -288,22 +307,51 @@ int main(int argc, char** argv) {
             remainingSamples -= batchSamples;
             bar.update(++iter);
         }
+        cudaDeviceSynchronize();
+        neuralTimeMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - neuralStart).count();
 
         cudaMemcpy(neuralPixels.data(), renderer.devicePixels(),
                    neuralPixels.size() * sizeof(uchar4), cudaMemcpyDeviceToHost);
-        savePng((std::string(kOutputFolder) + "/" + kNeuralOutput).c_str(),
-                neuralPixels, kWidth, kHeight);
+        savePng(neuralPath.c_str(), neuralPixels, kWidth, kHeight);
     }
 
-    // Compute metrics.
-    float psnr = computePsnr(groundTruthPixels, neuralPixels, kWidth, kHeight);
-    std::printf("\n=== Metrics ===\n");
-    std::printf("PSNR: %.2f dB\n", psnr);
+    // Compute metrics.  These compare our own neural render against our own path
+    // traced ground truth; the LiteRT benchmark ignores them and scores the
+    // saved PNG against its MESH reference instead.
+    if (config.rendering.render_ground_truth) {
+        float psnr = computePsnr(groundTruthPixels, neuralPixels, kWidth, kHeight);
+        std::printf("\n=== Metrics ===\n");
+        std::printf("PSNR: %.2f dB\n", psnr);
 
-    std::printf("Computing FLIP error...\n");
-    std::string flipPath = std::string(kOutputFolder) + "/" + kFlipOutput;
-    float flipError = computeFlip(groundTruthPixels, neuralPixels, kWidth, kHeight, flipPath.c_str());
-    std::printf("FLIP: %.4f (mean)\n", flipError);
+        std::printf("Computing FLIP error...\n");
+        std::string flipPath = std::string(kOutputFolder) + "/" + kFlipOutput;
+        float flipError = computeFlip(groundTruthPixels, neuralPixels, kWidth, kHeight, flipPath.c_str());
+        std::printf("FLIP: %.4f (mean)\n", flipError);
+    }
+
+    // Machine-readable summary for the LiteRT benchmark, which parses this as a
+    // blk block (same contract as nglod's sdf_renderer.py).  Size is the weights
+    // file we actually loaded plus the two shells (3 floats/vertex + 3 ints/face,
+    // since that's what's actually resident alongside the network at render time);
+    // time covers the neural pass only, so it is comparable with the numbers
+    // LiteRT measures for its internal renderers.
+    {
+        double sizeMb = 0.0;
+        std::error_code ec;
+        auto bytes = std::filesystem::file_size(config.checkpoint_path, ec);
+        if (!ec) sizeMb = double(bytes) / (1024.0 * 1024.0);
+
+        auto shellBytes = [](const Mesh& shell) -> double {
+            return double(shell.numVertices()) * 3.0 * sizeof(float) +
+                   double(shell.numTriangles()) * 3.0 * sizeof(int);
+        };
+        sizeMb += (shellBytes(innerShell) + shellBytes(outerShell)) / (1024.0 * 1024.0);
+
+        std::fflush(stdout);
+        std::fprintf(stderr, "{ size:r = %.6f time:r = %.4f }\n", sizeMb, neuralTimeMs);
+        std::fflush(stderr);
+    }
 
     std::printf("\nComparison complete.\n");
     return 0;

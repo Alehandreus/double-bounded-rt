@@ -8,6 +8,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include "render_params.h"
 #include "renderer.h"
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,10 @@ class RendererNeural final {
     void setSamplesPerPixel(int samples) { samplesPerPixel_ = samples; }
     void setBounceCount(int count) { bounceCount_ = count; }
     void setLambertView(bool enabled) { lambertView_ = enabled; }
+    void setLambertSettings(const LambertSettings& s) { lambertSettings_ = s; resetAccum(); }
+    void setCenterRays(bool v) { if (v != centerRays_) { centerRays_ = v; resetAccum(); } }
+    bool centerRays() const { return centerRays_; }
+    const LambertSettings& lambertSettings() const { return lambertSettings_; }
     void setClassicMeshIndex(int index) { classicMeshIndex_ = index; }
     int classicMeshIndex() const { return classicMeshIndex_; }
     void setEnvmapRotation(float degrees) { envmapRotation_ = degrees; }
@@ -231,6 +236,8 @@ class RendererNeural final {
     Vec3* accum_ = nullptr;
 
     bool lambertView_ = false;
+    LambertSettings lambertSettings_{};
+    bool centerRays_ = false;
     bool useNeuralQuery_ = false;
     bool swapParamOrder_ = true;  // checkpoint has [hg | mlp] instead of [mlp | hg]
     int samplesPerPixel_ = 1;

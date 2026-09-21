@@ -4,31 +4,59 @@ from types import SimpleNamespace
 cfg = SimpleNamespace()
 
 cfg.device = "cuda"
+cfg.scale = 100
+
+# cfg.fine_mesh_path = "models/superdragon_orig.obj"
+# cfg.outer_mesh_path = "models/superdragon_outer_5000_uv.obj"
+# cfg.inner_mesh_path = "models/superdragon_inner_5000.obj"
+
+cfg.fine_mesh_path = "/home/me/Downloads/petmonster_orig_uv.obj"
+cfg.outer_mesh_path = "/home/me/Downloads/petmonster_outer_2000_uv.obj"
+cfg.inner_mesh_path = "/home/me/Downloads/petmonster_inner_2000_uv.obj"
 
 cfg.scale = 100
-cfg.fine_mesh_path = "../scenes/chess/meshes/chess_neural.glb"
-cfg.outer_mesh_path = "../scenes/chess/meshes/chess_outer_20000.obj"
-cfg.inner_mesh_path = "../scenes/chess/meshes/chess_inner_10000.obj"
+# cfg.fine_mesh_path = "/home/me/Downloads/petmonster.obj"
+# cfg.outer_mesh_path = "/home/me/Downloads/outer.obj"
+# cfg.inner_mesh_path = "/home/me/Downloads/inner.obj"
+
+# cfg.scale = 100
+# cfg.fine_mesh_path = "/home/me/brain/scenes2/chess/ours/meshes/chess_neural.glb"
+# cfg.outer_mesh_path = "/home/me/brain/scenes2/chess/ours/meshes/chess_outer_20000.obj"
+# cfg.inner_mesh_path = "/home/me/brain/scenes2/chess/ours/meshes/chess_inner_10000.obj"
 
 # cfg.scale = 10
-# cfg.fine_mesh_path = "../scenes/exhibition/meshes/exhibition_neural.glb"
-# cfg.outer_mesh_path = "../scenes/exhibition/meshes/exhibition_outer_20000.obj"
-# cfg.inner_mesh_path = "../scenes/exhibition/meshes/exhibition_inner_10000.obj"
+# cfg.fine_mesh_path = "/home/me/brain/scenes/exhibition/ours/meshes/exhibition_neural.glb"
+# cfg.outer_mesh_path = "/home/me/brain/scenes/exhibition/ours/meshes/exhibition_outer_20000.obj"
+# cfg.inner_mesh_path = "/home/me/brain/scenes/exhibition/ours/meshes/exhibition_inner_10000.obj"
 
 # cfg.scale = 10
-# cfg.fine_mesh_path = "../scenes/andalusian/meshes/andalusian_neural.glb"
-# cfg.outer_mesh_path = "../scenes/andalusian/meshes/andalusian_outer_20000.obj"
-# cfg.inner_mesh_path = "../scenes/andalusian/meshes/andalusian_inner_10000.obj"
+# cfg.fine_mesh_path = "/home/me/brain/scenes/andalusian/ours/meshes/andalusian_neural_boolean.glb"
+# cfg.outer_mesh_path = "/home/me/brain/scenes/andalusian/ours/meshes/andalusian_outer_20000_boolean.obj"
+# cfg.inner_mesh_path = "/home/me/brain/scenes/andalusian/ours/meshes/andalusian_inner_10000.obj"
 
 # cfg.scale = 0.1
-# cfg.fine_mesh_path = "../scenes/statuette/meshes/statuette_neural.glb"
-# cfg.outer_mesh_path = "../scenes/statuette/meshes/statuette_outer_20000.obj"
-# cfg.inner_mesh_path = "../scenes/statuette/meshes/statuette_inner_10000.obj"
+# cfg.fine_mesh_path = "/home/me/brain/scenes/statuette/ours/meshes/statuette_neural.glb"
+# cfg.outer_mesh_path = "/home/me/brain/scenes/statuette/ours/meshes/statuette_outer_20000.obj"
+# cfg.inner_mesh_path = "/home/me/brain/scenes/statuette/ours/meshes/statuette_inner_10000.obj"
+
+# cfg.scale = 0.1
+# cfg.fine_mesh_path = "models/monkey_orig.fbx"
+# cfg.outer_mesh_path = "models/monkey_outer_1000.fbx"
+# cfg.inner_mesh_path = "models/monkey_inner_1000.fbx"
+
+# cfg.fine_mesh_path = "/home/me/Downloads/sphere_orig.obj"
+# cfg.outer_mesh_path = "/home/me/Downloads/sphere_outer.obj"
+# cfg.inner_mesh_path = "/home/me/Downloads/sphere_inner.obj"
+
+# cfg.scale = 0.001
+# cfg.fine_mesh_path = "/home/me/Downloads/statuette_orig.fbx"
+# cfg.outer_mesh_path = "/home/me/Downloads/statuette_outer_10000.fbx"
+# cfg.inner_mesh_path = "/home/me/Downloads/statuette_inner_10000.fbx"
 
 cfg.mesh_n_max_samples = 1_000_000
 
 
-### MODEL ###
+# MODEL #
 
 cfg.model = SimpleNamespace()
 
@@ -48,7 +76,7 @@ cfg.model.point_encoding_config = {
     "otype": "HashGrid",
     "n_levels": 8,
     "n_features_per_level": 4,
-    "log2_hashmap_size": 16,
+    "log2_hashmap_size": 10,
     "base_resolution": 16,
     "per_level_scale": 2,
     "fixed_point_pos": False,
@@ -61,7 +89,7 @@ cfg.model.direction_encoding_config = {
 }
 
 
-### TRAINING ###
+# TRAINING #
 
 cfg.train = SimpleNamespace()
 
@@ -82,6 +110,7 @@ cfg.train.swa_learing_rate = 1e-3
 
 # if not None, load model and optimizer state from given checkpoint
 cfg.train.model_start_checkpoint = None
+# cfg.train.model_start_checkpoint = "/home/me/brain/mesh-mapping/checkpoints/sphere_debug.pt"
 
 # path where checkpoint will be saved during training
 cfg.train.model_save_checkpoint = None
@@ -94,6 +123,7 @@ cfg.train.save_bin = True
 # tensorboard logging
 cfg.train.tensorboard = True
 cfg.train.tensorboard_path = "runs"
+# cfg.train.tensorboard_run_name = "chess_out10k_in5k_hg14"
 cfg.train.run_name = None
 
 cfg.train.loss_weights = {
@@ -104,7 +134,7 @@ cfg.train.loss_weights = {
 }
 
 
-### VISUALIZATION ###
+# VISUALIZATION #
 
 cfg.visualization = SimpleNamespace()
 
@@ -125,12 +155,9 @@ cfg.visualization.fine_mesh_preview_name = "fine_preview.png"
 cfg.visualization.outer_mesh_preview_name = "outer_preview.png"
 cfg.visualization.inner_mesh_preview_name = "inner_preview.png"
 
+# cfg.visualization.camera_angle = 135
 cfg.visualization.camera_angle = 0
 
-# use CUDA renderer for visualization instead of simple python lambert renderer
-# rendered images will be stored in trainer/comparison_output insread of trainer/<cfg.visualization.render_path>
 cfg.visualization.use_neural_renderer = False
-cfg.visualization.neural_renderer_path = "../renderer/build/evaluate"
-# base json config for CUDA renderer (paths will be replaced during training)
-cfg.json_config_path = "../scenes/chess/configs/chess_out20k_in10k_hg16.json"
-cfg.visualization.tmp_config_json_path = cfg.json_config_path[:-5] + "_tmp.json"
+cfg.visualization.neural_renderer_path = "/home/me/brain/mesh-mapping/cuda-rendering/build/evaluate"
+# cfg.visualization.tmp_config_json_path = cfg.json_config_path[:-5] + "_tmp.json"

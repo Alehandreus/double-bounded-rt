@@ -37,9 +37,19 @@ __device__ inline float rand01(uint32_t& state) {
 // Primary ray generation
 // ===========================================================================
 
-__device__ inline Ray generatePrimaryRay(int x, int y, const RenderParams& params, uint32_t& rng) {
-    float jitterX = rand01(rng);
-    float jitterY = rand01(rng);
+__device__ inline Ray generatePrimaryRay(int x, int y, const RenderParams& params, uint32_t& rng,
+                                         int sampleIdx = 0) {
+    float jitterX, jitterY;
+    if (params.centerRays) {
+        // Every sample, regardless of spp, goes through the exact pixel centre.
+        // Random jitter would otherwise move the sample and shift silhouettes
+        // by up to a pixel, which breaks comparability with LiteRT's reference.
+        jitterX = 0.5f;
+        jitterY = 0.5f;
+    } else {
+        jitterX = rand01(rng);
+        jitterY = rand01(rng);
+    }
     float aspect = static_cast<float>(params.width) / static_cast<float>(params.height);
     float u = (static_cast<float>(x) + jitterX) / static_cast<float>(params.width);
     float v = 1.0f - (static_cast<float>(y) + jitterY) / static_cast<float>(params.height);

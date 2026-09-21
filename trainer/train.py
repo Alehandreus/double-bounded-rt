@@ -112,12 +112,17 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         x_outer_exit = x_outer_enter + ds_left * x_outer_exit_t[:, None]
 
         if (~x_outer_exit_mask).sum() > 0:
+            # print(f"Warning no escape from outer shell! ({(~x_outer_exit_mask).sum().item()} rays)")
             x_outer_exit_t[~x_outer_exit_mask] = 1e-8
             x_outer_exit[~x_outer_exit_mask] = x_outer_enter[~x_outer_exit_mask] + ds_left[~x_outer_exit_mask] * x_outer_exit_t[~x_outer_exit_mask][:, None]
 
         x_inner_mask, x_inner_t, *_ = inner_mesh.ray_tracer.trace(x_outer_enter, ds_left, allow_negative=True)
         x_inner_enter = x_outer_enter + ds_left * x_inner_t[:, None]
         x_inner_enter[~x_inner_mask] = 0
+
+        # a = (x_inner_t < 0).sum().item()
+        # if a > 0:
+        #     print(f"Warning {a} rays starting inside inner shell during eval!")
 
         input_enter_points = x_outer_enter
         input_exit_points = torch.zeros_like(input_enter_points)
@@ -133,6 +138,8 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         )
         pred_intersection_mask = (pred_intersection >= 0)
         pred_intersection_mask[x_inner_mask & (x_inner_t < x_outer_exit_t)] = True
+        # pred_intersection_mask = pred_intersection_mask | True
+        # pred_normal[x_inner_t < 0] = x_orig_normals[mask_for_remaining_rays_global][x_inner_t < 0]
 
         pred_intersection_global[mask_for_remaining_rays_global] = pred_intersection_mask
         pred_t_global[mask_for_remaining_rays_global] = pred_t + accum_t
@@ -156,9 +163,16 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         ds_left = ds_left[mask_for_remaining_rays]
         accum_t = accum_t[mask_for_remaining_rays] + x_outer_exit_t[mask_for_remaining_rays] + x_outer_enter_t_new[mask_for_remaining_rays]
 
+        # print("Remaining rays to trace:", x_outer_enter.shape[0])
+
         i += 1
         if i > 10:
+            # print(f"Breaking after {i - 1} iterations, remaining rays: {x_outer_enter.shape[0]}")
             break
+
+    # x_inner_mask, x_inner_t, _, _ = inner_mesh.ray_tracer.trace(cam_poses, ds, allow_negative=True)
+    # pred_intersection_global[x_inner_mask] = 1.0
+    # pred_normal_global[x_inner_mask] = x_orig_normals[x_inner_mask]
 
     # prepare inputs for rendering
 
@@ -183,12 +197,15 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
 
 def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, optimizer, scheduler, swa_scheduler, writer, model_config, run_name, step):
     mesh_min, mesh_max = outer_mesh.mesh.get_bounds()
+    center = (mesh_min + mesh_max) / 2
     radius = np.sum((mesh_max - mesh_min) ** 2) ** 0.5
-    print('Radius of the sphere bounding the model (for cfg.scale adjustment) =', radius)
+    print('Sample sphere center =', center)
+    print('Sample sphere radius =', radius)
 
     progress = tqdm(range(step, cfg.train.epochs))
     for epoch in progress:
         model.train()
+        #x, normals = sample_sphere_torch(radius + 0.1, center, cfg.train.sample_size, cfg.device)
         x, normals, _ = outer_mesh.sampler.sample(cfg.train.sample_size)
         ds = sample_directions_torch(normals, cfg.device)
 
@@ -226,7 +243,11 @@ def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, o
             )
             x_outer_exit = x_outer_enter + ds_left * x_outer_exit_t[:, None]
 
+            # dot = (ds_left * x_outer_exit_normals).sum(dim=1)
+            # print(f"{(dot < 0).sum().item()} rays exiting outer shell have incorrect normal direction")
+
             if (~x_outer_exit_mask).sum() > 0:
+                # print(f"Warning no escape from outer shell! ({(~x_outer_exit_mask).sum().item()} rays)")
                 x_outer_exit_t[~x_outer_exit_mask] = 1e-3
                 x_outer_exit[~x_outer_exit_mask] = x_outer_enter[~x_outer_exit_mask] + ds_left[~x_outer_exit_mask] * x_outer_exit_t[~x_outer_exit_mask][:, None]
 
@@ -280,6 +301,7 @@ def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, o
             i += 1
             if i > 10:
                 break
+            # print('Remaining rays:', x_outer_enter.shape[0])
         
         gt_intersection_mask = torch.cat(gt_intersection_mask_all, dim=0)
         gt_normals = torch.cat(gt_normals_all, dim=0)
@@ -290,11 +312,22 @@ def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, o
         input_directions = torch.cat(input_directions, dim=0)
         input_outer_normals = torch.cat(input_outer_normals, dim=0)
 
+        gt_points = input_enter_points + input_directions * gt_distance[:, None]
+        # gt_points_normalized = (gt_points - model.mesh_min) / (model.mesh_max - model.mesh_min)
+        # emb_encoder = model.emb_encoder(gt_points_normalized).float()
+        # gt_emb = model.emb_model1(emb_encoder)
+        # emb_out = model.emb_model2(gt_emb)
+        # pred_point, pred_normal, pred_color, gt_emb = model.forward_embedder(gt_points_normalized)
+
         predicted_intersection_mask, predicted_t, predicted_normals, predicted_colors = model(
+            # gt_points,
+            # gt_points,
             input_enter_points,
             input_exit_points,
             input_directions,
         )
+        # predicted_t = predicted_t * (input_exit_points - input_enter_points).norm(dim=1)
+        # predicted_points = input_enter_points + input_directions * predicted_t[:, None]# * cfg.scale
 
         color_loss = F.mse_loss(
             predicted_colors[gt_intersection_mask],
@@ -310,17 +343,36 @@ def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, o
             predicted_t[gt_intersection_mask],
             gt_distance[gt_intersection_mask] / cfg.scale
         )
+        # distance_loss = F.mse_loss(
+        #     predicted_points[gt_intersection_mask] / cfg.scale,
+        #     gt_points[gt_intersection_mask] / cfg.scale
+        # )
 
         normal_loss = F.l1_loss(
             predicted_normals[gt_intersection_mask],
             gt_normals[gt_intersection_mask],
         )
+        # normal_loss = 1 - F.cosine_similarity(
+        #     predicted_normals[gt_intersection_mask],
+        #     gt_normals[gt_intersection_mask],
+        #     dim=1,
+        # ).mean()
+        # normal_loss = F.mse_loss(
+        #     predicted_normals[gt_intersection_mask],
+        #     gt_normals[gt_intersection_mask],
+        # )
 
         w = cfg.train.loss_weights
         loss = (cls_loss * w["cls_loss"]
                 + normal_loss * w["normal_loss"]
                 + color_loss * w["color_loss"]
                 + distance_loss * w["distance_loss"] * cfg.scale)
+        # loss = (
+        #     cls_loss * w["cls_loss"]
+        #     + normal_loss * w["normal_loss"]
+        #     # + color_loss * w["color_loss"]
+        #     # + distance_loss * w["distance_loss"] * cfg.scale
+        # )
 
         optimizer.zero_grad()
         loss.backward()

@@ -146,7 +146,7 @@ extern "C" __global__ void __raygen__primaryGT() {
     for (int s = 0; s < rp.samplesPerPixel; ++s) {
         int sampleIdx = pixelIdx + s * rp.pixelCount;
         uint32_t rng  = initRng(pixelIdx, rp.sampleOffset, s);
-        Ray ray       = generatePrimaryRay(x, y, rp, rng);
+        Ray ray       = generatePrimaryRay(x, y, rp, rng, s);
 
         uint32_t primIdx; float t, u, v;
         bool hit = traceMeshOptiX(launchParams.gas, ray, 1e-6f, 1e30f,
@@ -231,7 +231,7 @@ extern "C" __global__ void __raygen__shellEntry() {
         int sampleIdx = pixelIdx + s * rp.pixelCount;
         int base      = sampleIdx * 3;
         uint32_t rng  = initRng(pixelIdx, rp.sampleOffset, s);
-        Ray ray       = generatePrimaryRay(x, y, rp, rng);
+        Ray ray       = generatePrimaryRay(x, y, rp, rng, s);
 
         // Store ray direction
         launchParams.storedRayDirections[base + 0] = ray.direction.x;
@@ -417,7 +417,7 @@ extern "C" __global__ void __raygen__additionalPrimary() {
         }
 
         uint32_t rng = initRng(pixelIdx, rp.sampleOffset, s);
-        Ray ray      = generatePrimaryRay(x, y, rp, rng);
+        Ray ray      = generatePrimaryRay(x, y, rp, rng, s);
 
         uint32_t primIdx; float t, u, v;
         bool hit = traceMeshOptiX(launchParams.gas, ray, 1e-6f, 1e30f,

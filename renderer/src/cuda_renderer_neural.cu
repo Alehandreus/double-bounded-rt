@@ -259,7 +259,7 @@ __global__ void intersectGroundTruthKernel(float* hitPositions,
         int sampleIdx = pixelIdx + s * params.pixelCount;
         int base = sampleIdx * 3;
         uint32_t rng = initRng(pixelIdx, params.sampleOffset, s);
-        Ray ray = generatePrimaryRay(x, y, params, rng);
+        Ray ray = generatePrimaryRay(x, y, params, rng, s);
 
         HitData hit = traceRayGT(ray, mesh, params.material);
 
@@ -318,7 +318,7 @@ __global__ void initializePathStateKernel(Vec3* throughput,
     for (int s = 0; s < params.samplesPerPixel; ++s) {
         int sampleIdx = pixelIdx + s * params.pixelCount;
         uint32_t rng = initRng(pixelIdx, params.sampleOffset, s);
-        Ray primaryRay = generatePrimaryRay(x, y, params, rng);
+        Ray primaryRay = generatePrimaryRay(x, y, params, rng, s);
 
         Vec3 sampleRadiance(0.0f, 0.0f, 0.0f);
         Vec3 sampleThroughput(1.0f, 1.0f, 1.0f);
@@ -415,7 +415,7 @@ __global__ void sampleBounceDirectionsKernel(const float* hitPositions,
         if (incomingDirections) {
             incomingDir = Vec3(incomingDirections[base + 0], incomingDirections[base + 1], incomingDirections[base + 2]);
         } else {
-            Ray primaryRay = generatePrimaryRay(x, y, params, rng);
+            Ray primaryRay = generatePrimaryRay(x, y, params, rng, s);
             incomingDir = primaryRay.direction;
         }
 
@@ -736,7 +736,7 @@ __global__ void traceOuterShellEntryKernel(
         int sampleIdx = pixelIdx + s * params.pixelCount;
         int base = sampleIdx * 3;
         uint32_t rng = initRng(pixelIdx, params.sampleOffset, s);
-        Ray ray = generatePrimaryRay(x, y, params, rng);
+        Ray ray = generatePrimaryRay(x, y, params, rng, s);
 
         // Store ray direction
         rayDirections[base + 0] = ray.direction.x;
@@ -1148,7 +1148,7 @@ __global__ void traceAdditionalMeshPrimaryRaysKernel(
 
         // Reconstruct primary ray (same as shell tracing)
         uint32_t rng = initRng(pixelIdx, params.sampleOffset, s);
-        Ray ray = generatePrimaryRay(x, y, params, rng);
+        Ray ray = generatePrimaryRay(x, y, params, rng, s);
 
         // Trace against additional mesh
         HitInfo hit;
@@ -1565,7 +1565,7 @@ __global__ void lambertKernel(uchar4* output,
     for (int s = 0; s < params.samplesPerPixel; ++s) {
         int sampleIdx = pixelIdx + s * params.pixelCount;
         uint32_t rng = initRng(pixelIdx, params.sampleOffset, s);
-        Ray primaryRay = generatePrimaryRay(x, y, params, rng);
+        Ray primaryRay = generatePrimaryRay(x, y, params, rng, s);
 
         Vec3 color(0.0f, 0.0f, 0.0f);
         if (hitFlags[sampleIdx]) {
@@ -1573,31 +1573,49 @@ __global__ void lambertKernel(uchar4* output,
                     hitNormals[sampleIdx * 3 + 0],
                     hitNormals[sampleIdx * 3 + 1],
                     hitNormals[sampleIdx * 3 + 2]);
-            Vec3 baseColor(
-                    hitColors[sampleIdx * 3 + 0],
-                    hitColors[sampleIdx * 3 + 1],
-                    hitColors[sampleIdx * 3 + 2]);
+            Vec3 baseColor = params.lambert.whiteBaseColor
+                    ? Vec3(1.0f, 1.0f, 1.0f)
+                    : Vec3(hitColors[sampleIdx * 3 + 0],
+                           hitColors[sampleIdx * 3 + 1],
+                           hitColors[sampleIdx * 3 + 2]);
             float nlen = length(normal);
             if (nlen > 0.0f) {
                 normal = normal / nlen;
             } else {
                 normal = Vec3(0.0f, 1.0f, 0.0f);
             }
-            // Flip normal to face viewer (match NBVH's shading_frame)
+            // Flip normal to face viewer (match NBVH's shading_frame, and
+            // LiteRT's norm_sign in loadNormalTcFromGbuffer)
             if (dot(normal, primaryRay.direction) > 0.0f) {
                 normal = normal * -1.0f;
             }
-            float ndotl = fmaxf(0.0f, dot(normal, -primaryRay.direction));
-            color = baseColor * ndotl;
+            if (params.lambert.litertMode) {
+                // LiteRT MULTI_RENDER_MODE_LAMBERT_NO_TEX: one direct light plus
+                // an ambient term, no shadows.
+                float ndotl = fmaxf(0.0f, dot(normal, params.lambert.lightDir));
+                color = baseColor * (params.lambert.dirIntensity * ndotl +
+                                     params.lambert.ambient);
+            } else {
+                float ndotl = fmaxf(0.0f, dot(normal, -primaryRay.direction));
+                color = baseColor * ndotl;
+            }
         } else {
-            color = sampleEnvironment(env, primaryRay.direction);
+            color = params.lambert.litertMode
+                    ? params.lambert.background
+                    : sampleEnvironment(env, primaryRay.direction);
         }
 
         sum += color;
     }
 
     Vec3 color = sum * (1.0f / static_cast<float>(params.samplesPerPixel));
-    color = encodeSrgb(color);
+    if (params.lambert.encodeSrgb) {
+        color = encodeSrgb(color);
+    } else {
+        color = Vec3(clampf(color.x, 0.0f, 1.0f),
+                     clampf(color.y, 0.0f, 1.0f),
+                     clampf(color.z, 0.0f, 1.0f));
+    }
 
     output[pixelIdx] = make_uchar4(
             static_cast<unsigned char>(color.x * 255.0f),
@@ -1634,9 +1652,17 @@ RendererNeural::RendererNeural(Scene& scene, const NeuralNetworkConfig* nnConfig
           lightDir_(normalize(Vec3(1.0f, 1.5f, -1.0f))) {
     int log2HashmapSize = 14;
     int baseResolution = 16;
+    int nNeurons = 128;
+    int nHiddenLayers = 4;
+    int nLevels = 8;
+    std::string mlpOtype = "FullyFusedMLP";
     if (nnConfig != nullptr) {
         log2HashmapSize = nnConfig->log2_hashmap_size;
         baseResolution = nnConfig->base_resolution;
+        nNeurons = nnConfig->n_neurons;
+        nHiddenLayers = nnConfig->n_hidden_layers;
+        nLevels = nnConfig->n_levels;
+        mlpOtype = nnConfig->mlp_otype;
     }
 
     pointCount_ = 3u;
@@ -1647,7 +1673,7 @@ RendererNeural::RendererNeural(Scene& scene, const NeuralNetworkConfig* nnConfig
     tcnn::json hashgridConfig = {
         {"otype", "HashGrid"},
         {"n_dims_to_encode", 3},
-        {"n_levels", 8},
+        {"n_levels", nLevels},
         {"n_features_per_level", 4},
         {"log2_hashmap_size", log2HashmapSize},
         {"base_resolution", baseResolution},
@@ -1675,11 +1701,11 @@ RendererNeural::RendererNeural(Scene& scene, const NeuralNetworkConfig* nnConfig
     };
 
     tcnn::json mlpConfig = {
-        {"otype", "FullyFusedMLP"},
+        {"otype", mlpOtype},
         {"activation", "LeakyReLU"},
         {"output_activation", "None"},
-        {"n_neurons", 128},
-        {"n_hidden_layers", 4},
+        {"n_neurons", nNeurons},
+        {"n_hidden_layers", nHiddenLayers},
     };
 
     network_ = std::make_shared<tcnn::NetworkWithInputEncoding<__half>>(
@@ -2242,6 +2268,9 @@ void RendererNeural::render(const Vec3& camPos) {
     params.constantNeuralColor = constantNeuralColor_;
     params.useDirectEnvColor = useDirectEnvColor_;
     params.directEnvColor = directEnvColor_;
+    params.centerRays = centerRays_;
+    params.lambert = lambertSettings_;
+    params.lambert.lightDir = normalize(lambertSettings_.lightDir);
     params.fovY = basis_.fovY;
     params.maxRadiance = 100.0f;
     params.sceneScale = sceneScale_;

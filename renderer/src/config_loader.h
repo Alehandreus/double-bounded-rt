@@ -23,8 +23,9 @@ struct CameraConfig {
 
 struct RenderingConfig {
     // Deterministic stratified sub-pixel sampling instead of random jitter,
-    // matching LiteRT's RAY_GEN_MODE_REGULAR.  Required for pixel-comparable
-    // renders against the LiteRT benchmark, especially at low spp.
+    // matching LiteRT's RAY_GEN_MODE_REGULAR: a floor(sqrt(total_samples))^2 grid
+    // per pixel (set by evaluate via setStrataPerAxis).  Use the same spp as the
+    // LiteRT reference for identical sample positions.
     bool center_rays = false;
     int total_samples = 2048;
     int bounce_count = 3;

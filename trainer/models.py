@@ -21,43 +21,26 @@ class RayModel(nn.Module):
         # output dimentions of mlp head: presence of intersection (1), distance (1), normal (3) and color (3)
         self.n_output_dims = 8
 
-        self.direction_encoding = tcnn.Encoding(3, self.direction_encoding_config)   
+        self.direction_encoding = tcnn.Encoding(3, self.direction_encoding_config)
+        self.point_encoding = tcnn.Encoding(3, self.point_encoding_config)
 
-        if model_config.encoding_type == "3d":
-            self.point_encoding = tcnn.Encoding(3, self.point_encoding_config)
-            self.mlp_input_dims = self.point_encoding.n_output_dims * 2 + self.direction_encoding.n_output_dims
-        elif model_config.encoding_type == "3d+1":
-            self.point_encoding = tcnn.Encoding(3, self.point_encoding_config)
-            self.mlp_input_dims = self.point_encoding.n_output_dims * 3 + self.direction_encoding.n_output_dims
+        # "3d": encode entry and exit points; "3d+1": also their midpoint
+        n_points = {"3d": 2, "3d+1": 3}[model_config.encoding_type]
+        self.mlp_input_dims = self.point_encoding.n_output_dims * n_points + self.direction_encoding.n_output_dims
 
         self.network = tcnn.Network(self.mlp_input_dims, self.n_output_dims, self.network_config)
 
-    def forward(self, points, points_inner, directions, return_emb=False, inject_emb=None, *args, **kwargs):
-        directions = (directions + 1) / 2
-        directions_enc = self.direction_encoding(directions).float()
+    def forward(self, points, points_inner, directions):
+        directions_enc = self.direction_encoding((directions + 1) / 2).float()
 
-        if self.model_config.encoding_type == "3d":
-            points = (points - self.mesh_min) / (self.mesh_max - self.mesh_min)
-            points_enc = self.point_encoding(points).float()
+        extent = self.mesh_max - self.mesh_min
+        points = (points - self.mesh_min) / extent
+        points_inner = (points_inner - self.mesh_min) / extent
+        encoded = [self.point_encoding(points).float(), self.point_encoding(points_inner).float()]
+        if self.model_config.encoding_type == "3d+1":
+            encoded.append(self.point_encoding((points + points_inner) / 2).float())
 
-            points_inner = (points_inner - self.mesh_min) / (self.mesh_max - self.mesh_min)
-            points_inner_enc = self.point_encoding(points_inner).float()
-
-            x = torch.cat([points_enc, points_inner_enc, directions_enc], dim=1)
-
-        elif self.model_config.encoding_type == "3d+1":
-            points = (points - self.mesh_min) / (self.mesh_max - self.mesh_min)
-            points_enc = self.point_encoding(points).float()
-
-            points_inner = (points_inner - self.mesh_min) / (self.mesh_max - self.mesh_min)
-            points_inner_enc = self.point_encoding(points_inner).float()
-
-            points_interp = (points + points_inner) / 2
-            points_interp_enc = self.point_encoding(points_interp).float()
-
-            x = torch.cat([points_enc, points_inner_enc, points_interp_enc, directions_enc], dim=1)
-
-        y = self.network(x).float()
+        y = self.network(torch.cat(encoded + [directions_enc], dim=1)).float()
         has_intersection = y[:, 0]
         distance = y[:, 1]
         normal = y[:, 2:5]

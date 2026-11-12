@@ -19,3 +19,4 @@ renderer/*
 !renderer/CMakeLists.txt
 !renderer/PROJECT.md
 !renderer/ext
+paper_images/

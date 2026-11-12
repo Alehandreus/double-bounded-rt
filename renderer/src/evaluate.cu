@@ -85,32 +85,15 @@ struct ProgressBar {
     }
 };
 
-// Compute camera basis from yaw/pitch.
-void computeCameraBasis(const CameraState& camera, RenderBasis& basis) {
-    constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
-    float yawRad = camera.yaw * kDegToRad;
-    float pitchRad = camera.pitch * kDegToRad;
-
-    Vec3 forward(
-        std::cos(pitchRad) * std::cos(yawRad),
-        std::sin(pitchRad),
-        std::cos(pitchRad) * std::sin(yawRad));
-    forward = normalize(forward);
-
-    Vec3 worldUp(0.0f, 1.0f, 0.0f);
-    Vec3 right = cross(forward, worldUp);
-    float rLen = length(right);
-    if (rLen < 1e-4f) {
-        right = Vec3(1.0f, 0.0f, 0.0f);
-    } else {
-        right = right / rLen;
-    }
-    Vec3 up = normalize(cross(right, forward));
-
-    basis.forward = forward;
-    basis.right = right;
-    basis.up = up;
-    basis.fovY = camera.fovY;
+// Camera basis straight from the column-major view matrix (rows of its rotation
+// part are right, up and -forward).  Going through yaw/pitch would lose roll.
+RenderBasis cameraBasisFromMatrix(const float m[16], float fovY) {
+    RenderBasis basis;
+    basis.right = normalize(Vec3(m[0], m[4], m[8]));
+    basis.up = normalize(Vec3(m[1], m[5], m[9]));
+    basis.forward = normalize(Vec3(-m[2], -m[6], -m[10]));
+    basis.fovY = fovY;
+    return basis;
 }
 
 int main(int argc, char** argv) {
@@ -225,6 +208,7 @@ int main(int argc, char** argv) {
     renderer.setLambertView(config.shading.lambert);
     renderer.setLambertSettings(ToLambertSettings(config.shading));
     renderer.setCenterRays(config.rendering.center_rays);
+    renderer.setStrataPerAxis(static_cast<int>(std::sqrt(static_cast<double>(config.rendering.total_samples))));
     if (config.shading.lambert) {
         std::printf("Shading: lambert%s\n",
                     config.shading.litert_mode ? " (LiteRT-compatible)" : " (headlight)");
@@ -240,8 +224,7 @@ int main(int argc, char** argv) {
     std::printf("Loaded checkpoint: %s\n", config.checkpoint_path.c_str());
 
     // Compute camera basis.
-    RenderBasis basis;
-    computeCameraBasis(camera, basis);
+    RenderBasis basis = cameraBasisFromMatrix(config.camera.matrix, camera.fovY);
     renderer.setCameraBasis(basis);
 
     // Allocate output buffers.
@@ -249,6 +232,9 @@ int main(int argc, char** argv) {
     std::vector<uchar4> groundTruthPixels(pixelCount);
     std::vector<uchar4> neuralPixels(pixelCount);
     double neuralTimeMs = 0.0;
+#ifdef PROFILE_KERNELS
+    KernelTimings neuralTimings;  // summed over every render() call of the neural pass
+#endif
 
     // Resolve where the neural render goes.  Without an explicit output_path we
     // keep writing comparison_output/neural.png next to the CWD, as before.
@@ -291,6 +277,11 @@ int main(int argc, char** argv) {
         std::printf("\n=== Rendering neural (%d samples) ===\n", kTotalSamples);
         renderer.setUseNeuralQuery(true);
         renderer.setClassicMeshIndex(0);
+        // Untimed warm-up: the first render() lazily builds BVHs and uploads every
+        // mesh, allocates network buffers and initializes tcnn.
+        renderer.setSamplesPerPixel(std::min(kTotalSamples, kBatchSizeNeural));
+        renderer.render(camera.position);
+        cudaDeviceSynchronize();
         renderer.resetSamples();
 
         int remainingSamples = kTotalSamples;
@@ -304,6 +295,9 @@ int main(int argc, char** argv) {
             int batchSamples = std::min(remainingSamples, kBatchSizeNeural);
             renderer.setSamplesPerPixel(batchSamples);
             renderer.render(camera.position);
+#ifdef PROFILE_KERNELS
+            neuralTimings += renderer.lastFrameTimings();
+#endif
             remainingSamples -= batchSamples;
             bar.update(++iter);
         }
@@ -350,6 +344,18 @@ int main(int argc, char** argv) {
 
         std::fflush(stdout);
         std::fprintf(stderr, "{ size:r = %.6f time:r = %.4f }\n", sizeMb, neuralTimeMs);
+#ifdef PROFILE_KERNELS
+        // Per-bucket GPU time (ms) summed over the whole neural pass.
+        // frame_ms spans each render() call, so frame_ms - sum(buckets) is the
+        // time spent in untimed kernels, memsets and host syncs.
+        std::fprintf(stderr, "{ prof_frame_ms:r = %.4f", neuralTimings.frameMs);
+        for (int i = 0; i < KID_COUNT; ++i) {
+            std::fprintf(stderr, " prof_%s_ms:r = %.4f", KernelTimings::key(i), neuralTimings.ms[i]);
+        }
+        std::fprintf(stderr, " prof_rays:r = %llu prof_neural_ray_calls:r = %llu spp:i = %d }\n",
+                     static_cast<unsigned long long>(neuralTimings.rayCount),
+                     static_cast<unsigned long long>(neuralTimings.neuralRayCalls), kTotalSamples);
+#endif
         std::fflush(stderr);
     }
 

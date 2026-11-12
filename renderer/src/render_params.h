@@ -39,6 +39,7 @@ struct RenderParams {
     Vec3 directEnvColor;
     LambertSettings lambert;
     bool centerRays;
+    int strataPerAxis;   // centerRays: sqrt(total spp) grid, LiteRT RAY_GEN_MODE_REGULAR; 0 = pixel centre
     float fovY;
     float maxRadiance;
     float sceneScale;

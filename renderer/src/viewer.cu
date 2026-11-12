@@ -591,7 +591,7 @@ int main(int argc, char** argv) {
                 ImGui::EndTable();
             }
 
-            ImGui::Text("Rays: %d  (%.2f Mrays)", kt.rayCount,
+            ImGui::Text("Rays: %llu  (%.2f Mrays)", static_cast<unsigned long long>(kt.rayCount),
                         static_cast<double>(kt.rayCount) / 1.0e6);
             if (kt.neuralRayCalls > 0 && kt.rayCount > 0) {
                 ImGui::Text("Avg neural calls/ray: %.2f",

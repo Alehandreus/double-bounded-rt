@@ -41,11 +41,20 @@ __device__ inline Ray generatePrimaryRay(int x, int y, const RenderParams& param
                                          int sampleIdx = 0) {
     float jitterX, jitterY;
     if (params.centerRays) {
-        // Every sample, regardless of spp, goes through the exact pixel centre.
-        // Random jitter would otherwise move the sample and shift silhouettes
-        // by up to a pixel, which breaks comparability with LiteRT's reference.
-        jitterX = 0.5f;
-        jitterY = 0.5f;
+        // Deterministic sub-pixel positions instead of random jitter, for renders
+        // that must be pixel-comparable with LiteRT's reference.
+        // With strataPerAxis = n, sample k of the whole accumulation lands on cell
+        // (k / n, k % n) of an n x n grid, exactly like LiteRT's RAY_GEN_MODE_REGULAR
+        // (MultiRenderer.cpp initEyeRay).  n = 0 keeps the old pixel-centre behaviour.
+        int n = params.strataPerAxis;
+        if (n > 0) {
+            int k = static_cast<int>((params.sampleOffset + static_cast<uint32_t>(sampleIdx)) % static_cast<uint32_t>(n * n));
+            jitterX = (static_cast<float>(k / n) + 0.5f) / static_cast<float>(n);
+            jitterY = (static_cast<float>(k % n) + 0.5f) / static_cast<float>(n);
+        } else {
+            jitterX = 0.5f;
+            jitterY = 0.5f;
+        }
     } else {
         jitterX = rand01(rng);
         jitterY = rand01(rng);

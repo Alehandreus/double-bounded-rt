@@ -219,10 +219,6 @@ if(USE_OPTIX)
 endif()
 
 # Kernel profiling option (viewer only; zero overhead when OFF)
-option(PROFILE_KERNELS "Enable per-kernel GPU timing in the viewer" OFF)
-if(PROFILE_KERNELS)
-    target_compile_definitions(viewer PRIVATE PROFILE_KERNELS)
-endif()
 
 # Evaluation tool (ground truth vs neural comparison with PSNR and FLIP)
 add_executable(evaluate
@@ -260,6 +256,12 @@ if (TARGET assimp::assimp)
     target_link_libraries(evaluate PRIVATE assimp::assimp)
 else()
     target_link_libraries(evaluate PRIVATE assimp)
+endif()
+
+option(PROFILE_KERNELS "Enable per-kernel GPU timing in the viewer and evaluate" OFF)
+if(PROFILE_KERNELS)
+    target_compile_definitions(viewer PRIVATE PROFILE_KERNELS)
+    target_compile_definitions(evaluate PRIVATE PROFILE_KERNELS)
 endif()
 
 # Image comparison tool (PSNR and FLIP between two existing images)

@@ -10,9 +10,13 @@ cfg.scale = 100
 # cfg.outer_mesh_path = "models/superdragon_outer_5000_uv.obj"
 # cfg.inner_mesh_path = "models/superdragon_inner_5000.obj"
 
-cfg.fine_mesh_path = "/home/me/Downloads/petmonster_orig_uv.obj"
-cfg.outer_mesh_path = "/home/me/Downloads/petmonster_outer_2000_uv.obj"
-cfg.inner_mesh_path = "/home/me/Downloads/petmonster_inner_2000_uv.obj"
+# cfg.fine_mesh_path = "/home/me/Downloads/petmonster_orig_uv.obj"
+# cfg.outer_mesh_path = "/home/me/Downloads/petmonster_outer_2000_uv.obj"
+# cfg.inner_mesh_path = "/home/me/Downloads/petmonster_inner_2000_uv.obj"
+
+cfg.fine_mesh_path = "/home/me/brain/mesh-mapping/models/dragon_orig.fbx"
+cfg.outer_mesh_path = "/home/me/brain/mesh-mapping/models/dragon_outer_2000.fbx"
+cfg.inner_mesh_path = "/home/me/brain/mesh-mapping/models/dragon_inner_2000.fbx"
 
 cfg.scale = 100
 # cfg.fine_mesh_path = "/home/me/Downloads/petmonster.obj"
@@ -76,7 +80,7 @@ cfg.model.point_encoding_config = {
     "otype": "HashGrid",
     "n_levels": 8,
     "n_features_per_level": 4,
-    "log2_hashmap_size": 10,
+    "log2_hashmap_size": 14,
     "base_resolution": 16,
     "per_level_scale": 2,
     "fixed_point_pos": False,
@@ -95,7 +99,7 @@ cfg.train = SimpleNamespace()
 
 # each epoch contains <cfg.train.sample_size> rays
 cfg.train.sample_size = 100_000
-cfg.train.epochs = 200_000
+cfg.train.epochs = 20_000
 
 cfg.train.learning_rate = 1e-3
 cfg.train.learning_rate_scheduler_min = 1.0
@@ -124,7 +128,16 @@ cfg.train.save_bin = True
 cfg.train.tensorboard = True
 cfg.train.tensorboard_path = "runs"
 # cfg.train.tensorboard_run_name = "chess_out10k_in5k_hg14"
-cfg.train.run_name = None
+cfg.train.run_name = "dragon_out2k_in2k_hg14"
+
+# "l1" or "cosine"
+cfg.train.normal_loss_type = "l1"
+# predicted normal = outer shell normal at entry + network output
+cfg.train.normal_residual = False
+# 0 = off; else hits weighted by clamp(1/(cos_incidence+0.05), max) in normal and cls losses
+cfg.train.incidence_weight_max = 0.0
+# 0 = off; focal weighting (1-p_true)^gamma on cls loss, renormalized to mean 1
+cfg.train.focal_gamma = 0.0
 
 cfg.train.loss_weights = {
     "cls_loss": 0.1,

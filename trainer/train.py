@@ -2,15 +2,13 @@ import os
 import json
 import numpy as np
 import torch
-import torch.autograd as autograd
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.optim.swa_utils import AveragedModel, SWALR
-from torch import nn
 import torch.nn.functional as F
-import math
 import copy
 from tqdm import tqdm
-from utils import MeshWrapper, sample_directions_torch, sample_sphere_torch, get_camera_rays
+from mesh_utils import trace_shell_segments
+from utils import MeshWrapper, sample_uniform_directions, get_camera_rays
 from visualization import save_mesh_previews, render_predictions, render_predictions_with_neural_renderer
 import sys
 from models import RayModel
@@ -112,7 +110,6 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         x_outer_exit = x_outer_enter + ds_left * x_outer_exit_t[:, None]
 
         if (~x_outer_exit_mask).sum() > 0:
-            # print(f"Warning no escape from outer shell! ({(~x_outer_exit_mask).sum().item()} rays)")
             x_outer_exit_t[~x_outer_exit_mask] = 1e-8
             x_outer_exit[~x_outer_exit_mask] = x_outer_enter[~x_outer_exit_mask] + ds_left[~x_outer_exit_mask] * x_outer_exit_t[~x_outer_exit_mask][:, None]
 
@@ -120,9 +117,6 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         x_inner_enter = x_outer_enter + ds_left * x_inner_t[:, None]
         x_inner_enter[~x_inner_mask] = 0
 
-        # a = (x_inner_t < 0).sum().item()
-        # if a > 0:
-        #     print(f"Warning {a} rays starting inside inner shell during eval!")
 
         input_enter_points = x_outer_enter
         input_exit_points = torch.zeros_like(input_enter_points)
@@ -138,8 +132,6 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         )
         pred_intersection_mask = (pred_intersection >= 0)
         pred_intersection_mask[x_inner_mask & (x_inner_t < x_outer_exit_t)] = True
-        # pred_intersection_mask = pred_intersection_mask | True
-        # pred_normal[x_inner_t < 0] = x_orig_normals[mask_for_remaining_rays_global][x_inner_t < 0]
 
         pred_intersection_global[mask_for_remaining_rays_global] = pred_intersection_mask
         pred_t_global[mask_for_remaining_rays_global] = pred_t + accum_t
@@ -163,16 +155,11 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
         ds_left = ds_left[mask_for_remaining_rays]
         accum_t = accum_t[mask_for_remaining_rays] + x_outer_exit_t[mask_for_remaining_rays] + x_outer_enter_t_new[mask_for_remaining_rays]
 
-        # print("Remaining rays to trace:", x_outer_enter.shape[0])
 
         i += 1
         if i > 10:
-            # print(f"Breaking after {i - 1} iterations, remaining rays: {x_outer_enter.shape[0]}")
             break
 
-    # x_inner_mask, x_inner_t, _, _ = inner_mesh.ray_tracer.trace(cam_poses, ds, allow_negative=True)
-    # pred_intersection_global[x_inner_mask] = 1.0
-    # pred_normal_global[x_inner_mask] = x_orig_normals[x_inner_mask]
 
     # prepare inputs for rendering
 
@@ -195,184 +182,183 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
     return mse, psnr, accuracy
 
 
+def generate_segments(outer_mesh, inner_mesh, fine_mesh, x, ds, max_segments=11, min_rays=10):
+    """Training segments for rays (x, ds), walked through the double shell on the GPU.
+
+    One mesh_utils kernel walks every ray through all its segments; this
+    function then keeps the same segments, in the same order, as the original
+    per-iteration torch loop: iteration-major, ray order preserved within an
+    iteration, and stopping before the first iteration with <= min_rays rays.
+    """
+    seg = trace_shell_segments(
+        outer_mesh.ray_tracer, inner_mesh.ray_tracer, fine_mesh.ray_tracer,
+        x, ds, max_segments=max_segments, shift_eps=eps, no_exit_t=1e-3,
+    )
+    n_iters = 0
+    for count in seg.valid.sum(dim=1).tolist():  # host sync 1
+        if count <= min_rays:
+            break
+        n_iters += 1
+
+    n_rays = x.shape[0]
+    idx = seg.valid[:n_iters].reshape(-1).nonzero().squeeze(1)  # host sync 2
+    rows = seg.records[:n_iters].reshape(n_iters * n_rays, -1).index_select(0, idx)
+
+    gt_mask = rows[:, 19] > 0.5
+    gt_idx = gt_mask.nonzero().squeeze(1)  # host sync 3: indices of segments with a gt hit
+
+    return (
+        gt_mask,            # gt intersection mask
+        gt_idx,             # indices where gt_mask is True
+        rows[:, 12:15],     # gt normals
+        rows[:, 18],        # gt distance
+        rows[:, 15:18],     # gt colors
+        rows[:, 0:3],       # segment enter points
+        rows[:, 3:6],       # segment exit points (inner shell hit or outer exit)
+        rows[:, 6:9],       # directions
+        rows[:, 9:12],      # outer shell normals at entry
+    )
+
+
+class BatchPrefetcher:
+    """Generates training batches on a side CUDA stream.
+
+    The host syncs inside generate_segments() then wait only for that stream,
+    so the next batch is produced while the GPU is still running the previous
+    model step. Batches (and RNG consumption order) are the same as generating
+    them inline at the top of each epoch.
+    """
+
+    def __init__(self, cfg, fine_mesh, outer_mesh, inner_mesh):
+        self.cfg = cfg
+        self.meshes = (outer_mesh, inner_mesh, fine_mesh)
+        self.stream = torch.cuda.Stream()
+
+    def prepare(self):
+        outer_mesh, inner_mesh, fine_mesh = self.meshes
+        with torch.cuda.stream(self.stream):
+            x, _, _ = outer_mesh.sampler.sample(self.cfg.train.sample_size)  # (points, barycentrics, face_idx)
+            ds = sample_uniform_directions(x.shape[0], self.cfg.device)
+            return generate_segments(outer_mesh, inner_mesh, fine_mesh, x, ds)
+
+    def hand_over(self, batch):
+        """Make a prepared batch safe to use on the current stream."""
+        main = torch.cuda.current_stream()
+        main.wait_stream(self.stream)
+        for t in batch:
+            t.record_stream(main)
+        return batch
+
+
+def write_losses_to_tensorboard(writer, pending, evaluation_interval):
+    """Write a deferred epoch's scalars once its loss values reached the host."""
+    epoch, event, host_vals, lr, mse, psnr, accuracy, flip, n = pending
+    event.synchronize()  # waits for that epoch's step only, not for work queued after it
+    total_v, normal_v, distance_v, cls_v, color_v = host_vals.tolist()
+    writer.add_scalar("Total_loss", total_v, n)
+    writer.add_scalar("Normal_loss", normal_v, n)
+    writer.add_scalar("Distance_loss", distance_v, n)
+    writer.add_scalar("Entropy_loss", cls_v, n)
+    writer.add_scalar("Learning_rate", lr, n)
+    writer.add_scalar("Color_loss", color_v, n)
+    if mse > 0:
+        writer.add_scalar("MSE", mse, n)
+    if psnr > 0:
+        writer.add_scalar("PSNR", psnr, n)
+    if accuracy > 0:
+        writer.add_scalar("Accuracy", accuracy, n)
+    if flip > 0:
+        writer.add_scalar("FLIP", flip, n)
+    # SummaryWriter also auto-flushes every 120 s; force it only on evaluation epochs
+    if epoch % evaluation_interval == evaluation_interval - 1:
+        writer.flush()
+
+
+def compute_losses(cfg, model, inner_mesh, batch, log_baseline=False):
+    """Loss terms for one batch of segments (see generate_segments for the layout).
+
+    Returns (total, normal, distance, cls, color). Distance and color are computed for
+    logging only: with the current weights they do not enter the total.
+    """
+    (gt_mask, gt_idx, gt_normals, gt_distance, gt_colors,
+     enter_points, exit_points, directions, outer_normals) = batch
+
+    pred_logit, pred_t, pred_normals, pred_colors = model(enter_points, exit_points, directions)
+
+    color_loss = F.mse_loss(pred_colors.index_select(0, gt_idx), gt_colors.index_select(0, gt_idx))
+    distance_loss = F.l1_loss(pred_t.index_select(0, gt_idx), gt_distance.index_select(0, gt_idx) / cfg.scale)
+
+    # Masked cls loss: segments whose ray already hits the inner shell at the end of the segment are
+    # classified as "hit" by the renderer (it ORs the inner-shell hit into the network output),
+    # so the network does not need to learn them. Leave them out of the BCE.
+    with torch.no_grad():
+        seg_len = (exit_points - enter_points).norm(dim=1)
+        inner_hit_mask, inner_hit_t, *_ = inner_mesh.ray_tracer.trace(
+            enter_points + directions * eps, directions, allow_negative=True)
+        inner_hit = inner_hit_mask & ((inner_hit_t - seg_len).abs() < 2e-3 * cfg.scale + 1e-3)
+        keep = (~inner_hit).float()
+    bce = F.binary_cross_entropy_with_logits(pred_logit, gt_mask.float(), reduction="none")
+
+    gn = gt_normals.index_select(0, gt_idx)
+
+    # per-segment cls weights (renormalized to mean 1 over the kept set, detached)
+    cls_w = keep.clone()
+    inc_max = getattr(cfg.train, "incidence_weight_max", 0.0)
+    if inc_max > 0:
+        # up-weight grazing hits: w = clamp(1 / (cos + 0.05), max), cos = -d . n_gt
+        with torch.no_grad():
+            inc_cos = (-(gn * directions.index_select(0, gt_idx)).sum(1)).clamp_min(0)
+            inc_w = (1.0 / (inc_cos + 0.05)).clamp_max(inc_max)
+            seg_w = torch.ones_like(keep)
+            seg_w[gt_idx] = inc_w
+            cls_w = cls_w * seg_w
+    focal_gamma = getattr(cfg.train, "focal_gamma", 0.0)
+    if focal_gamma > 0:
+        with torch.no_grad():
+            p_true = torch.sigmoid(pred_logit)
+            p_true = torch.where(gt_mask, p_true, 1 - p_true)
+            cls_w = cls_w * (1 - p_true).pow(focal_gamma)
+    n_keep = keep.sum().clamp_min(1.0)
+    cls_w = cls_w / (cls_w.sum() / n_keep).clamp_min(1e-12)
+    cls_loss = (bce * cls_w).sum() / n_keep
+
+    pn = pred_normals.index_select(0, gt_idx)
+    if getattr(cfg.train, "normal_residual", False):
+        # baseline = outer shell normal at segment entry; network predicts the adjustment
+        bn = outer_normals.index_select(0, gt_idx)
+        pn = bn + pn
+        if log_baseline:
+            with torch.no_grad():
+                print(f"[normal_residual] baseline-only: l1={F.l1_loss(bn, gn).item():.4f} "
+                      f"cos={(1 - F.cosine_similarity(bn, gn, dim=1)).mean().item():.4f}", flush=True)
+    if getattr(cfg.train, "normal_loss_type", "l1") == "cosine":
+        # renderer normalizes the predicted normal, so only direction matters
+        normal_err = 1 - F.cosine_similarity(pn, gn, dim=1, eps=1e-6)
+    else:
+        normal_err = (pn - gn).abs().mean(1)
+    if inc_max > 0:
+        normal_loss = (normal_err * (inc_w / inc_w.mean())).mean()
+    else:
+        normal_loss = normal_err.mean()
+
+    w = cfg.train.loss_weights
+    # the factor 3 on cls is historical; benchmark configs were tuned with it
+    loss = cls_loss * w["cls_loss"] * 3 + normal_loss * w["normal_loss"]
+    return loss, normal_loss, distance_loss, cls_loss, color_loss
+
+
 def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, optimizer, scheduler, swa_scheduler, writer, model_config, run_name, step):
-    mesh_min, mesh_max = outer_mesh.mesh.get_bounds()
-    center = (mesh_min + mesh_max) / 2
-    radius = np.sum((mesh_max - mesh_min) ** 2) ** 0.5
-    print('Sample sphere center =', center)
-    print('Sample sphere radius =', radius)
+    prefetcher = BatchPrefetcher(cfg, fine_mesh, outer_mesh, inner_mesh)
+    next_batch = prefetcher.prepare() if step < cfg.train.epochs else None
+    pending_log = None  # previous epoch's tensorboard scalars, written one epoch late
+    pinned_vals = [torch.empty(5, dtype=torch.float32, pin_memory=True) for _ in range(2)]
 
     progress = tqdm(range(step, cfg.train.epochs))
     for epoch in progress:
         model.train()
-        #x, normals = sample_sphere_torch(radius + 0.1, center, cfg.train.sample_size, cfg.device)
-        x, normals, _ = outer_mesh.sampler.sample(cfg.train.sample_size)
-        ds = sample_directions_torch(normals, cfg.device)
-
-        gt_intersection_mask_all = []
-        gt_normals_all = []
-        gt_distance_all = []
-        gt_colors_all = []
-
-        input_enter_points_list = []
-        input_exit_points_list = []
-        input_directions = []
-        input_outer_normals = []
-
-        # current point on the outer shell (enering another segment)
-        x_outer_enter_mask, x_outer_enter_t, x_outer_enter_normals, *_ = outer_mesh.ray_tracer.trace(x, ds, allow_negative=False, allow_backward=False)
-        x_outer_enter = x + ds * x_outer_enter_t[:, None]
-        x_outer_enter = x_outer_enter[x_outer_enter_mask]
-        x_outer_enter_normals = x_outer_enter_normals[x_outer_enter_mask]
-
-        # directions for rays left to trace
-        ds_left = ds[x_outer_enter_mask]
-
-        i = 0
-        while len(x_outer_enter) > 10:
-            # shift a bit into the outer shell
-            x_outer_enter = x_outer_enter + ds_left * eps
-
-            # intersect orig mesh, inner shell and outer shell again 
-            x_outer_exit_mask, x_outer_exit_t, x_outer_exit_normals, *_ = outer_mesh.ray_tracer.trace(
-                x_outer_enter,
-                ds_left,
-                allow_negative=False,
-                allow_backward=True,
-                allow_forward=False,
-            )
-            x_outer_exit = x_outer_enter + ds_left * x_outer_exit_t[:, None]
-
-            # dot = (ds_left * x_outer_exit_normals).sum(dim=1)
-            # print(f"{(dot < 0).sum().item()} rays exiting outer shell have incorrect normal direction")
-
-            if (~x_outer_exit_mask).sum() > 0:
-                # print(f"Warning no escape from outer shell! ({(~x_outer_exit_mask).sum().item()} rays)")
-                x_outer_exit_t[~x_outer_exit_mask] = 1e-3
-                x_outer_exit[~x_outer_exit_mask] = x_outer_enter[~x_outer_exit_mask] + ds_left[~x_outer_exit_mask] * x_outer_exit_t[~x_outer_exit_mask][:, None]
-
-            x_inner_mask, x_inner_t, *_ = inner_mesh.ray_tracer.trace(x_outer_enter, ds_left, allow_negative=False)
-            x_inner_enter = x_outer_enter + ds_left * x_inner_t[:, None]
-            x_inner_enter[~x_inner_mask] = 0
-
-            x_orig_mask, x_orig_t, x_orig_normals, _, colors, *_ = fine_mesh.ray_tracer.trace(x_outer_enter, ds_left, allow_negative=False)
-            x_orig = x_outer_enter + ds_left * x_orig_t[:, None]
-            x_orig[~x_orig_mask] = 0
-
-            # ground truth for training
-            gt_intersection_mask = x_orig_mask & (x_orig_t < x_outer_exit_t)
-            gt_normals = x_orig_normals
-            gt_distance = x_orig_t
-            gt_colors = colors
-
-            # input for model
-            input_enter_points = x_outer_enter
-            input_exit_points = torch.zeros_like(input_enter_points)
-            inner_apply = x_inner_mask & (x_inner_t < x_outer_exit_t)
-            input_exit_points[inner_apply] = x_inner_enter[inner_apply]
-            input_exit_points[~inner_apply] = x_outer_exit[~inner_apply]
-
-            # store results
-            gt_intersection_mask_all.append(gt_intersection_mask)
-            gt_normals_all.append(gt_normals)
-            gt_distance_all.append(gt_distance)
-            gt_colors_all.append(gt_colors)
-            input_enter_points_list.append(input_enter_points)
-            input_exit_points_list.append(input_exit_points)
-            input_directions.append(ds_left)
-            input_outer_normals.append(x_outer_enter_normals)
-
-            x_outer_exit = x_outer_exit + ds_left * eps
-            x_outer_enter_mask_new, x_outer_enter_t_new, x_outer_enter_normals_new, *_ = outer_mesh.ray_tracer.trace(
-                x_outer_exit,
-                ds_left,
-                allow_negative=False,
-                allow_backward=False,
-                allow_forward=True,                
-            )
-            x_outer_enter_new = x_outer_exit + ds_left * x_outer_enter_t_new[:, None]
-
-            # prepare for next iteration
-            mask_for_remaining_rays = ~gt_intersection_mask & x_orig_mask & x_outer_exit_mask & x_outer_enter_mask_new
-            x_outer_enter = x_outer_enter_new[mask_for_remaining_rays]
-            x_outer_enter_normals = x_outer_enter_normals_new[mask_for_remaining_rays]
-            ds_left = ds_left[mask_for_remaining_rays]
-
-            i += 1
-            if i > 10:
-                break
-            # print('Remaining rays:', x_outer_enter.shape[0])
-        
-        gt_intersection_mask = torch.cat(gt_intersection_mask_all, dim=0)
-        gt_normals = torch.cat(gt_normals_all, dim=0)
-        gt_distance = torch.cat(gt_distance_all, dim=0)
-        gt_colors = torch.cat(gt_colors_all, dim=0)
-        input_enter_points = torch.cat(input_enter_points_list, dim=0)
-        input_exit_points = torch.cat(input_exit_points_list, dim=0)
-        input_directions = torch.cat(input_directions, dim=0)
-        input_outer_normals = torch.cat(input_outer_normals, dim=0)
-
-        gt_points = input_enter_points + input_directions * gt_distance[:, None]
-        # gt_points_normalized = (gt_points - model.mesh_min) / (model.mesh_max - model.mesh_min)
-        # emb_encoder = model.emb_encoder(gt_points_normalized).float()
-        # gt_emb = model.emb_model1(emb_encoder)
-        # emb_out = model.emb_model2(gt_emb)
-        # pred_point, pred_normal, pred_color, gt_emb = model.forward_embedder(gt_points_normalized)
-
-        predicted_intersection_mask, predicted_t, predicted_normals, predicted_colors = model(
-            # gt_points,
-            # gt_points,
-            input_enter_points,
-            input_exit_points,
-            input_directions,
-        )
-        # predicted_t = predicted_t * (input_exit_points - input_enter_points).norm(dim=1)
-        # predicted_points = input_enter_points + input_directions * predicted_t[:, None]# * cfg.scale
-
-        color_loss = F.mse_loss(
-            predicted_colors[gt_intersection_mask],
-            gt_colors[gt_intersection_mask],
-        )
-
-        cls_loss = F.binary_cross_entropy_with_logits(
-            predicted_intersection_mask,
-            gt_intersection_mask.float()
-        )
-
-        distance_loss = F.l1_loss(
-            predicted_t[gt_intersection_mask],
-            gt_distance[gt_intersection_mask] / cfg.scale
-        )
-        # distance_loss = F.mse_loss(
-        #     predicted_points[gt_intersection_mask] / cfg.scale,
-        #     gt_points[gt_intersection_mask] / cfg.scale
-        # )
-
-        normal_loss = F.l1_loss(
-            predicted_normals[gt_intersection_mask],
-            gt_normals[gt_intersection_mask],
-        )
-        # normal_loss = 1 - F.cosine_similarity(
-        #     predicted_normals[gt_intersection_mask],
-        #     gt_normals[gt_intersection_mask],
-        #     dim=1,
-        # ).mean()
-        # normal_loss = F.mse_loss(
-        #     predicted_normals[gt_intersection_mask],
-        #     gt_normals[gt_intersection_mask],
-        # )
-
-        w = cfg.train.loss_weights
-        loss = (cls_loss * w["cls_loss"]
-                + normal_loss * w["normal_loss"]
-                + color_loss * w["color_loss"]
-                + distance_loss * w["distance_loss"] * cfg.scale)
-        # loss = (
-        #     cls_loss * w["cls_loss"]
-        #     + normal_loss * w["normal_loss"]
-        #     # + color_loss * w["color_loss"]
-        #     # + distance_loss * w["distance_loss"] * cfg.scale
-        # )
+        batch = prefetcher.hand_over(next_batch)
+        loss, normal_loss, distance_loss, cls_loss, color_loss = compute_losses(
+            cfg, model, inner_mesh, batch, log_baseline=(epoch == step))
 
         optimizer.zero_grad()
         loss.backward()
@@ -385,13 +371,17 @@ def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, o
             swa_scheduler.step()
         scheduler.step()
 
+        # everything above is queued asynchronously; build the next batch on the
+        # side stream while the GPU executes this step
+        next_batch = prefetcher.prepare() if epoch + 1 < cfg.train.epochs else None
+
         mse = 0
         psnr = 0
         accuracy = 0
         flip = 0
         info = ""
         if epoch % cfg.train.evaluation_interval == cfg.train.evaluation_interval - 1:
-            save_checkpoint(cfg, model_config, model, averaged_model, optimizer, scheduler, run_name, step)
+            save_checkpoint(cfg, model_config, model, averaged_model, optimizer, scheduler, run_name, epoch + 1)
             if cfg.train.evaluate:
                 if cfg.visualization.use_neural_renderer:
                     psnr, flip = render_predictions_with_neural_renderer(cfg, run_name)
@@ -403,21 +393,19 @@ def train_model(cfg, fine_mesh, outer_mesh, inner_mesh, model, averaged_model, o
         if info != "":
             progress.set_postfix_str(info)
         if cfg.train.tensorboard:
-            writer.add_scalar("Total_loss", loss.item(), epoch * cfg.train.sample_size)
-            writer.add_scalar("Normal_loss", normal_loss.item(), epoch * cfg.train.sample_size)
-            writer.add_scalar("Distance_loss", distance_loss.item(), epoch * cfg.train.sample_size)
-            writer.add_scalar("Entropy_loss", cls_loss.item(), epoch * cfg.train.sample_size)
-            writer.add_scalar("Learning_rate", scheduler.get_last_lr()[0], epoch * cfg.train.sample_size)
-            writer.add_scalar("Color_loss", color_loss.item(), epoch * cfg.train.sample_size)
-            if mse > 0:
-                writer.add_scalar("MSE", mse, epoch * cfg.train.sample_size)
-            if psnr > 0:
-                writer.add_scalar("PSNR", psnr, epoch * cfg.train.sample_size)            
-            if accuracy > 0:
-                writer.add_scalar("Accuracy", accuracy, epoch * cfg.train.sample_size)
-            if flip > 0:
-                writer.add_scalar("FLIP", flip, epoch * cfg.train.sample_size)
-            writer.flush()
+            # copy this epoch's losses to pinned host memory without waiting, and
+            # write the previous epoch's scalars (whose copy has finished by now)
+            host_vals = pinned_vals[epoch % 2]
+            host_vals.copy_(torch.stack([loss, normal_loss, distance_loss, cls_loss, color_loss]).detach(), non_blocking=True)
+            event = torch.cuda.Event()
+            event.record()
+            if pending_log is not None:
+                write_losses_to_tensorboard(writer, pending_log, cfg.train.evaluation_interval)
+            pending_log = (epoch, event, host_vals, scheduler.get_last_lr()[0], mse, psnr, accuracy, flip,
+                           epoch * cfg.train.sample_size)
+
+    if pending_log is not None:
+        write_losses_to_tensorboard(writer, pending_log, cfg.train.evaluation_interval)
 
     return model
 
@@ -448,7 +436,7 @@ def main(cfg):
     model = RayModel(model_config, outer_mesh.mesh).to(cfg.device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
-    learing_rate_scheduler = CosineAnnealingLR(
+    lr_scheduler = CosineAnnealingLR(
         optimizer,
         T_max=cfg.train.learning_rate_scheduler_total_iters,
         eta_min=cfg.train.learning_rate * cfg.train.learning_rate_scheduler_min,
@@ -468,7 +456,7 @@ def main(cfg):
         print("Loading model state...")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        learing_rate_scheduler.load_state_dict(checkpoint["learning_rate_scheduler"])
+        lr_scheduler.load_state_dict(checkpoint["learning_rate_scheduler"])
         step = checkpoint["step"]
 
         if cfg.train.use_averaged_model in ['EMA', 'SWA']:
@@ -477,18 +465,18 @@ def main(cfg):
     writer = None
     run_name = f"run_{int(time.time())}"
     if cfg.train.run_name:
-            run_name = cfg.train.run_name
+        run_name = cfg.train.run_name
     if cfg.train.tensorboard:
         writer = SummaryWriter(f"{cfg.train.tensorboard_path}/{run_name}")
 
     model = train_model(
         cfg, fine_mesh, outer_mesh, inner_mesh,
         model, averaged_model, optimizer, 
-        learing_rate_scheduler, swa_scheduler, 
+        lr_scheduler, swa_scheduler, 
         writer, model_config, run_name, step
     )
 
-    save_checkpoint(cfg, model_config, model, averaged_model, optimizer, learing_rate_scheduler, run_name, cfg.train.epochs)
+    save_checkpoint(cfg, model_config, model, averaged_model, optimizer, lr_scheduler, run_name, cfg.train.epochs)
     
 
 if __name__ == "__main__":

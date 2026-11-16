@@ -27,6 +27,9 @@ struct RenderingConfig {
     // per pixel (set by evaluate via setStrataPerAxis).  Use the same spp as the
     // LiteRT reference for identical sample positions.
     bool center_rays = false;
+    // Trace shells / meshes with OptiX hardware RT when the build supports it
+    // (USE_OPTIX); false falls back to the software BVH.
+    bool use_hardware_rt = true;
     int total_samples = 2048;
     int bounce_count = 3;
     int width = 1920;

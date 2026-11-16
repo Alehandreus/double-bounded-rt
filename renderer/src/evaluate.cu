@@ -208,6 +208,10 @@ int main(int argc, char** argv) {
     renderer.setLambertView(config.shading.lambert);
     renderer.setLambertSettings(ToLambertSettings(config.shading));
     renderer.setCenterRays(config.rendering.center_rays);
+#ifdef USE_OPTIX
+    renderer.setUseHardwareRT(config.rendering.use_hardware_rt);
+    std::printf("Hardware RT (OptiX): %s\n", config.rendering.use_hardware_rt ? "on" : "off");
+#endif
     renderer.setStrataPerAxis(static_cast<int>(std::sqrt(static_cast<double>(config.rendering.total_samples))));
     if (config.shading.lambert) {
         std::printf("Shading: lambert%s\n",
@@ -325,22 +329,36 @@ int main(int argc, char** argv) {
     }
 
     // Machine-readable summary for the LiteRT benchmark, which parses this as a
-    // blk block (same contract as nglod's sdf_renderer.py).  Size is the weights
-    // file we actually loaded plus the two shells (3 floats/vertex + 3 ints/face,
-    // since that's what's actually resident alongside the network at render time);
-    // time covers the neural pass only, so it is comparable with the numbers
-    // LiteRT measures for its internal renderers.
+    // blk block (same contract as nglod's sdf_renderer.py).  Size = network weights
+    // file + the two shells.  Shells are counted as what tracing them needs:
+    //   - OptiX on:  their compacted GAS bytes (the GAS contains the geometry);
+    //   - OptiX off: 1.5 x (welded positions at 16 B + indices at 12 B per triangle),
+    //                i.e. mesh data plus a BVH budget of half of it.
+    // Time covers the neural pass only.
     {
         double sizeMb = 0.0;
         std::error_code ec;
         auto bytes = std::filesystem::file_size(config.checkpoint_path, ec);
         if (!ec) sizeMb = double(bytes) / (1024.0 * 1024.0);
 
-        auto shellBytes = [](const Mesh& shell) -> double {
-            return double(shell.numVertices()) * 3.0 * sizeof(float) +
-                   double(shell.numTriangles()) * 3.0 * sizeof(int);
+        bool gasUsed = false;
+#ifdef USE_OPTIX
+        gasUsed = config.rendering.use_hardware_rt &&
+                  innerShell.gasBufferSize() > 0 && outerShell.gasBufferSize() > 0;
+#endif
+        auto shellBytes = [&](const Mesh& shell) -> double {
+#ifdef USE_OPTIX
+            if (gasUsed) return double(shell.gasBufferSize());
+#endif
+            return 1.5 * (double(shell.weldedVertexCount()) * 16.0 + double(shell.numTriangles()) * 12.0);
         };
-        sizeMb += (shellBytes(innerShell) + shellBytes(outerShell)) / (1024.0 * 1024.0);
+        const double innerB = shellBytes(innerShell), outerB = shellBytes(outerShell);
+        sizeMb += (innerB + outerB) / (1024.0 * 1024.0);
+        std::fprintf(stderr, "[DBRT size] weights=%ju B inner_shell=%.0f B outer_shell=%.0f B (%s) inner_tris=%d outer_tris=%d inner_welded_verts=%zu outer_welded_verts=%zu\n",
+                     (uintmax_t)(ec ? 0 : bytes), innerB, outerB,
+                     gasUsed ? "compacted OptiX GAS" : "1.5 x (welded positions 16 B + indices 12 B)",
+                     innerShell.numTriangles(), outerShell.numTriangles(),
+                     innerShell.weldedVertexCount(), outerShell.weldedVertexCount());
 
         std::fflush(stdout);
         std::fprintf(stderr, "{ size:r = %.6f time:r = %.4f }\n", sizeMb, neuralTimeMs);

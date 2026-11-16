@@ -264,6 +264,23 @@ if(PROFILE_KERNELS)
     target_compile_definitions(evaluate PRIVATE PROFILE_KERNELS)
 endif()
 
+# OptiX for evaluate too (same wiring as the viewer above). Without this the LiteRT
+# benchmark, which renders through evaluate, always used the software BVH.
+if(USE_OPTIX)
+    target_sources(evaluate PRIVATE
+        src/rt/optix_state.cu
+        src/rt/optix_state.h
+        src/rt/optix_launch_params.h
+    )
+    add_dependencies(evaluate optix_ptx_header)
+    target_include_directories(evaluate PRIVATE
+        ${OPTIX_INCLUDE_DIR}
+        ${CMAKE_CURRENT_BINARY_DIR}   # for optix_programs_ptx.h
+    )
+    target_compile_definitions(evaluate PRIVATE USE_OPTIX)
+    target_link_libraries(evaluate PRIVATE CUDA::cuda_driver)
+endif()
+
 # Image comparison tool (PSNR and FLIP between two existing images)
 add_executable(compare_images
     src/compare_images.cu

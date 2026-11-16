@@ -95,6 +95,7 @@ bool LoadConfigFromFile(const char* configPath, RendererConfig* config, std::str
             auto& render = j["rendering"];
             config->rendering.total_samples = render.value("total_samples", 2048);
             config->rendering.center_rays = render.value("center_rays", false);
+            config->rendering.use_hardware_rt = render.value("use_hardware_rt", true);
             config->rendering.bounce_count = render.value("bounce_count", 3);
             config->rendering.width = render.value("width", 1920);
             config->rendering.height = render.value("height", 1080);

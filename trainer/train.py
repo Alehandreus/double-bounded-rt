@@ -343,7 +343,7 @@ def compute_losses(cfg, model, inner_mesh, batch, log_baseline=False):
 
     w = cfg.train.loss_weights
     # the factor 3 on cls is historical; benchmark configs were tuned with it
-    loss = cls_loss * w["cls_loss"] * 3 + normal_loss * w["normal_loss"]
+    loss = cls_loss * w["cls_loss"] * 3 + normal_loss * w["normal_loss"] + distance_loss * w["distance_loss"] + color_loss * w["color_loss"]
     return loss, normal_loss, distance_loss, cls_loss, color_loss
 
 

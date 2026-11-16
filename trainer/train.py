@@ -113,7 +113,7 @@ def eval_model(cfg, fine_mesh, outer_mesh, inner_mesh, model):
             x_outer_exit_t[~x_outer_exit_mask] = 1e-8
             x_outer_exit[~x_outer_exit_mask] = x_outer_enter[~x_outer_exit_mask] + ds_left[~x_outer_exit_mask] * x_outer_exit_t[~x_outer_exit_mask][:, None]
 
-        x_inner_mask, x_inner_t, *_ = inner_mesh.ray_tracer.trace(x_outer_enter, ds_left, allow_negative=True)
+        x_inner_mask, x_inner_t, *_ = inner_mesh.ray_tracer.trace(x_outer_enter, ds_left, allow_negative=False)
         x_inner_enter = x_outer_enter + ds_left * x_inner_t[:, None]
         x_inner_enter[~x_inner_mask] = 0
 

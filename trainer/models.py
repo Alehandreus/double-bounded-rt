@@ -46,4 +46,8 @@ class RayModel(nn.Module):
         normal = y[:, 2:5]
         colors = y[:, 5:8]
 
-        return has_intersection, distance, normal, colors
+        normalized_normal = torch.zeros(normal.shape, dtype=normal.dtype, device=normal.device)
+        if (normal.norm(dim=1) > 1e-8).any():
+            normalized_normal[normal.norm(dim=1) > 1e-8] = (normal / normal.norm(dim=1, keepdim=True))[normal.norm(dim=1) > 1e-8]
+
+        return has_intersection, distance, normalized_normal, colors
